@@ -1,10 +1,12 @@
 # UniFi for Omarchy
 
-A bar widget for [Omarchy](https://omarchy.org) that talks to your UniFi gateway: WAN rates, the busiest clients, and a switch for every VPN policy route.
+Switch your UniFi VPN routes from the Omarchy bar.
 
-<img src="docs/panel.png" width="430" alt="UniFi panel open from the Omarchy bar">
+UniFi sends a device through a VPN client with a policy route ("Traffic Route" in Settings > Routing). This widget lists those routes with an on/off switch each, so putting the TV or a console on the VPN is one click from the bar instead of five in the UniFi app. It also shows WAN rates and the busiest clients.
 
-UniFi sends a device through a VPN client with a policy route ("Traffic Route" in Settings > Routing). The panel lists those routes with an on/off switch each, so putting the TV or a console on the VPN is one click from the bar.
+<img src="preview.png" width="430" alt="UniFi panel open from the Omarchy bar">
+
+For full network monitoring (devices, WAN links, client search) look at the other UniFi plugins on [plugins.omarchy.org](https://plugins.omarchy.org). This one is about the route switches.
 
 ## Features
 
@@ -43,6 +45,15 @@ Then give it a key:
 The gateway uses a self-signed certificate on the LAN, so the helper does not verify TLS. Use the LAN address, not a remote one.
 
 The key has the rights of the UniFi user that created it. The route switches write to the gateway: they do exactly what flipping the route in the UniFi app does.
+
+### Remove
+
+```
+omarchy plugin remove tolixx.unifi
+rm -r ~/.config/omarchy-unifi
+```
+
+The plugin writes nothing else to your system. Routes stay as you last switched them.
 
 ### Optional settings
 
