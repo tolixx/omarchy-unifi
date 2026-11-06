@@ -40,9 +40,9 @@ Panel {
   property var vpnList: []
   property string armedDelete: ""   // a route id waiting for the second click
   property string notice: ""
-  readonly property var unrouted: root.clients
-    .filter(function(c) { return !c.route })
-    .sort(function(a, b) { return String(a.name).localeCompare(String(b.name)) })
+  // Snapshot taken when picking starts: a live binding would rebuild the list
+  // (and jump back to the top) on every refresh.
+  property var unrouted: []
   readonly property int pickCount: mode === "client" ? unrouted.length : (mode === "vpn" ? vpnList.length : 0)
 
   readonly property string glyph: "󰑩"
@@ -102,6 +102,9 @@ Panel {
   }
 
   function startAdd() {
+    root.unrouted = root.clients
+      .filter(function(c) { return !c.route })
+      .sort(function(a, b) { return String(a.name).localeCompare(String(b.name)) })
     root.armedDelete = ""
     root.mode = "client"
     root.pickIndex = 0
@@ -238,7 +241,7 @@ Panel {
   Timer { id: disarmTimer; interval: 4000; onTriggered: root.armedDelete = "" }
 
   Timer { interval: root.refreshSec * 1000; running: !root.opened; repeat: true; onTriggered: root.refreshBar() }
-  Timer { interval: 3000; running: root.opened; repeat: true; onTriggered: root.refreshPanel() }
+  Timer { interval: 3000; running: root.opened && root.mode === ""; repeat: true; onTriggered: root.refreshPanel() }
 
   BarIconButton {
     id: button
