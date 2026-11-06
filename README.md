@@ -2,7 +2,7 @@
 
 Switch your UniFi VPN routes from the Omarchy bar.
 
-UniFi sends a device through a VPN client with a policy route ("Traffic Route" in Settings > Routing). This widget lists those routes with an on/off switch each, so putting the TV or a console on the VPN is one click from the bar instead of five in the UniFi app. It also shows WAN rates and the busiest clients.
+UniFi sends a device through a VPN client with a policy route ("Traffic Route" in Settings > Routing). This widget lists those routes with an on/off switch each, so putting the TV or a console on the VPN is one click from the bar. It also shows WAN rates and the busiest clients.
 
 <img src="preview.png" width="430" alt="UniFi panel open from the Omarchy bar">
 
