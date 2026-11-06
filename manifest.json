@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "tolixx.unifi",
   "name": "UniFi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "tolixx",
   "license": "MIT",
-  "description": "UniFi gateway in the Omarchy bar: WAN rates, busiest clients, and a switch per VPN policy route.",
+  "description": "Switch, add and remove UniFi VPN policy routes per device from the Omarchy bar, plus WAN rates and the busiest clients.",
   "kinds": [
     "bar-widget"
   ],

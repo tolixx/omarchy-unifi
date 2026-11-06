@@ -2,7 +2,7 @@
 
 Switch your UniFi VPN routes from the Omarchy bar.
 
-UniFi sends a device through a VPN client with a policy route ("Traffic Route" in Settings > Routing). This widget lists those routes with an on/off switch each, so putting the TV or a console on the VPN is one click from the bar. It also shows WAN rates and the busiest clients.
+UniFi sends a device through a VPN client with a policy route ("Traffic Route" in Settings > Routing). This widget lists those routes with an on/off switch each, and adds new ones: pick a device, pick a VPN, and its internet traffic goes through that tunnel. It also shows WAN rates and the busiest clients.
 
 <img src="preview.png" width="430" alt="UniFi panel open from the Omarchy bar">
 
@@ -14,8 +14,10 @@ For full network monitoring (devices, WAN links, client search) look at the othe
 - Right click shows the live download rate in the bar
 - Panel: ISP and WAN state, client count, download and upload
 - One switch per policy route, with the VPN it uses and how many of its devices are online
+- Add device: pick any online device without a route, then one of your VPN clients, and the gateway creates the route
+- Remove a per-device route with the × next to it (click twice)
 - Top 8 clients by traffic, wired or Wi-Fi, and which ones go through a VPN
-- `j` / `k` move between routes, `enter` flips the selected one, `esc` closes
+- Keys: `j` / `k` move, `enter` flips the selected route, `x` removes it, `a` adds a device, `esc` goes back or closes
 
 ## Requirements
 
@@ -44,7 +46,7 @@ Then give it a key:
 
 The gateway uses a self-signed certificate on the LAN, so the helper does not verify TLS. Use the LAN address, not a remote one.
 
-The key has the rights of the UniFi user that created it. The route switches write to the gateway: they do exactly what flipping the route in the UniFi app does.
+The key has the rights of the UniFi user that created it. Switching, adding and removing routes writes to the gateway, the same as doing it in the UniFi app.
 
 ### Remove
 
@@ -81,7 +83,12 @@ omarchy-unifi panel                  # everything the panel shows, in one call
 omarchy-unifi clients                # active clients, rates, and the route each one is on
 omarchy-unifi routes                 # policy routes with their VPN
 omarchy-unifi vpn <route-id> on|off  # switch a route
+omarchy-unifi vpns                   # VPN clients a route can use
+omarchy-unifi route-add <mac> <vpn-id> [name]  # send one device through a VPN
+omarchy-unifi route-del <route-id>   # delete a route
 ```
+
+A new route matches all of the device's internet traffic (UniFi's "Internet" target) with no kill switch. If the tunnel behind it is down, that device loses internet until you switch the route off or remove it.
 
 ## License
 
