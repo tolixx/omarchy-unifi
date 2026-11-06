@@ -16,6 +16,7 @@ For full network monitoring (devices, WAN links, client search) look at the othe
 - One switch per policy route, with the VPN it uses and how many of its devices are online
 - Add device: pick any online device without a route, then one of your VPN clients, and the gateway creates the route
 - Remove a per-device route with the × next to it (click twice)
+- Tunnel state from the gateway: routes and the VPN picker mark tunnels that are down, or that send without getting anything back
 - Top 8 clients by traffic, wired or Wi-Fi, and which ones go through a VPN
 - Keys: `j` / `k` move, `enter` flips the selected route, `x` removes it, `a` adds a device, `esc` goes back or closes
 
