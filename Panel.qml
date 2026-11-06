@@ -12,6 +12,7 @@ import qs.Ui
 //   bar    -> {text, tooltip, class, down, up, clients, ...}   (bar refresh)
 //   panel  -> {bar, routes[], clients[], client_count}        (panel open)
 //   vpn <route-id> on|off                                     (switches)
+//   route-add <mac> <vpn-id> <name>, route-del <route-id>      (add / remove a device)
 Panel {
   id: root
   moduleName: "tolixx.unifi"
@@ -30,6 +31,19 @@ Panel {
   property string busyRoute: ""
   property int routeIndex: 0
   property bool cursorActive: false
+
+  // Adding a device: "" (route list) -> "client" (pick a device) -> "vpn" (pick a VPN client).
+  property string mode: ""
+  property int pickIndex: 0
+  property string pickMac: ""
+  property string pickName: ""
+  property var vpnList: []
+  property string armedDelete: ""   // a route id waiting for the second click
+  property string notice: ""
+  readonly property var unrouted: root.clients
+    .filter(function(c) { return !c.route })
+    .sort(function(a, b) { return String(a.name).localeCompare(String(b.name)) })
+  readonly property int pickCount: mode === "client" ? unrouted.length : (mode === "vpn" ? vpnList.length : 0)
 
   readonly property string glyph: "󰑩"
   // A widget instance can exist without a bar (e.g. while the shell reloads), so fall back to theme values.
@@ -80,6 +94,55 @@ Panel {
     setRoute(r, !r.enabled)
   }
 
+  function runAction(args, message) {
+    if (actionProc.running) return
+    root.notice = message
+    actionProc.command = [root.helper].concat(args)
+    actionProc.running = true
+  }
+
+  function startAdd() {
+    root.armedDelete = ""
+    root.mode = "client"
+    root.pickIndex = 0
+    root.cursorActive = true
+  }
+
+  function pickClient(c) {
+    if (!c) return
+    root.pickMac = c.mac
+    root.pickName = c.name
+    root.mode = "vpn"
+    root.pickIndex = 0
+  }
+
+  function pickVpn(v) {
+    if (!v) return
+    root.mode = ""
+    runAction(["route-add", root.pickMac, v.id, root.pickName], "Sending " + root.pickName + " through " + v.name + "…")
+  }
+
+  function cancelPick() {
+    root.mode = ""
+    root.cursorActive = false
+  }
+
+  function deleteRoute(r) {
+    if (!r || !r.per_device) return
+    if (root.armedDelete !== r.id) {
+      root.armedDelete = r.id
+      disarmTimer.restart()
+      return
+    }
+    root.armedDelete = ""
+    runAction(["route-del", r.id], "Removing " + (r.name || "route") + "…")
+  }
+
+  function activatePick() {
+    if (root.mode === "client") pickClient(root.unrouted[root.pickIndex])
+    else if (root.mode === "vpn") pickVpn(root.vpnList[root.pickIndex])
+  }
+
   function toggleRate() {
     root.settings = Object.assign({}, root.settings, { showRate: !root.showRate })
     if (root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName, root.settings)
@@ -100,6 +163,9 @@ Panel {
     if (opened) {
       cursorActive = false
       refreshPanel()
+    } else {
+      mode = ""
+      armedDelete = ""
     }
   }
 
@@ -134,6 +200,7 @@ Panel {
         root.routes = d.routes || []
         root.clients = d.clients || []
         root.clientCount = d.client_count || 0
+        root.vpnList = d.vpns || []
         if (root.routeIndex >= root.routes.length) root.routeIndex = 0
       }
     }
@@ -153,6 +220,22 @@ Panel {
       root.refreshPanel()
     }
   }
+
+  Process {
+    id: actionProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var d = root.parse(text)
+        root.notice = d.error ? d.error : (d.deleted ? "Route removed" : (d.vpn ? d.name + " now goes through " + d.vpn : ""))
+        noticeTimer.restart()
+      }
+    }
+    onExited: root.refreshPanel()
+  }
+
+  Timer { id: noticeTimer; interval: 6000; onTriggered: root.notice = "" }
+  Timer { id: disarmTimer; interval: 4000; onTriggered: root.armedDelete = "" }
 
   Timer { interval: root.refreshSec * 1000; running: !root.opened; repeat: true; onTriggered: root.refreshBar() }
   Timer { interval: 3000; running: root.opened; repeat: true; onTriggered: root.refreshPanel() }
@@ -185,13 +268,22 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       onMoveRequested: function(dx, dy) {
+        var d = dy !== 0 ? dy : dx
+        if (root.mode !== "") {
+          if (root.pickCount > 0) root.pickIndex = (root.pickIndex + d + root.pickCount) % root.pickCount
+          return
+        }
         if (root.routes.length === 0) return
         if (!root.cursorActive) { root.cursorActive = true; return }
-        var d = dy !== 0 ? dy : dx
         root.routeIndex = (root.routeIndex + d + root.routes.length) % root.routes.length
       }
-      onActivateRequested: if (root.cursorActive) root.toggleSelectedRoute()
-      onCloseRequested: root.close()
+      onActivateRequested: {
+        if (root.mode !== "") root.activatePick()
+        else if (root.cursorActive) root.toggleSelectedRoute()
+      }
+      onDeleteRequested: if (root.mode === "" && root.cursorActive) root.deleteRoute(root.routes[root.routeIndex])
+      onTextKey: function(t) { if (root.mode === "" && (t === "a" || t === "+")) root.startAdd() }
+      onCloseRequested: root.mode !== "" ? root.cancelPick() : root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
       Column {
@@ -264,18 +356,52 @@ Panel {
           }
         }
 
+        Text {
+          visible: root.notice !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          text: root.notice
+          color: Color.accent
+          font.family: root.fontFam
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.Wrap
+        }
+
         // ---------- VPN routes ----------
-        PanelSeparator { foreground: root.fg; visible: root.routes.length > 0 }
+        PanelSeparator { foreground: root.fg; visible: root.mode === "" }
 
         Column {
           width: parent.width
           spacing: Style.space(6)
-          visible: root.routes.length > 0
+          visible: root.mode === ""
 
-          PanelSectionHeader {
-            text: "VPN ROUTES"
-            foreground: root.fg
-            fontFamily: root.fontFam
+          Item {
+            width: parent.width
+            implicitHeight: Math.max(routesHeader.implicitHeight, addButton.implicitHeight)
+
+            PanelSectionHeader {
+              id: routesHeader
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "VPN ROUTES"
+              foreground: root.fg
+              fontFamily: root.fontFam
+            }
+
+            Button {
+              id: addButton
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: "󰐕"
+              text: "Add device"
+              fontSize: Style.font.caption
+              iconSize: Style.font.bodySmall
+              foreground: root.fg
+              fontFamily: root.fontFam
+              bordered: true
+              tooltipText: "Send a device through a VPN (a)"
+              onClicked: root.startAdd()
+            }
           }
 
           Repeater {
@@ -289,7 +415,7 @@ Panel {
               Column {
                 id: routeLabels
                 anchors.left: parent.left
-                anchors.right: routeSwitch.left
+                anchors.right: removeButton.visible ? removeButton.left : routeSwitch.left
                 anchors.rightMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
 
@@ -315,6 +441,22 @@ Panel {
                 }
               }
 
+              Button {
+                id: removeButton
+                visible: modelData.per_device === true
+                anchors.right: routeSwitch.left
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: root.armedDelete === modelData.id ? "" : "󰅖"
+                text: root.armedDelete === modelData.id ? "Remove?" : ""
+                fontSize: Style.font.caption
+                iconSize: Style.font.bodySmall
+                foreground: root.armedDelete === modelData.id ? Color.accent : root.fg
+                fontFamily: root.fontFam
+                tooltipText: root.armedDelete === modelData.id ? "Click again to delete this route" : "Delete route (x)"
+                onClicked: root.deleteRoute(modelData)
+              }
+
               ToggleSwitch {
                 id: routeSwitch
                 anchors.right: parent.right
@@ -330,13 +472,87 @@ Panel {
           }
         }
 
+        // ---------- Add a device: pick a client, then a VPN ----------
+        PanelSeparator { foreground: root.fg; visible: root.mode !== "" }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(6)
+          visible: root.mode !== ""
+
+          Item {
+            width: parent.width
+            implicitHeight: Math.max(pickHeader.implicitHeight, backButton.implicitHeight)
+
+            PanelSectionHeader {
+              id: pickHeader
+              anchors.left: parent.left
+              anchors.right: backButton.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.mode === "client" ? "WHICH DEVICE?" : ("SEND " + root.pickName + " THROUGH").toUpperCase()
+              foreground: root.fg
+              fontFamily: root.fontFam
+            }
+
+            Button {
+              id: backButton
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Cancel"
+              fontSize: Style.font.caption
+              foreground: root.fg
+              fontFamily: root.fontFam
+              bordered: true
+              onClicked: root.cancelPick()
+            }
+          }
+
+          Text {
+            visible: root.mode === "client" && root.unrouted.length === 0
+            text: "Every online device already has a route."
+            color: root.fg
+            opacity: 0.6
+            font.family: root.fontFam
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          ListView {
+            id: pickList
+            width: parent.width
+            height: Math.min(contentHeight, Style.space(34) * 10)
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            spacing: Style.space(2)
+            currentIndex: root.pickIndex
+            onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+            model: root.mode === "client" ? root.unrouted : (root.mode === "vpn" ? root.vpnList : [])
+            delegate: Button {
+              required property var modelData
+              required property int index
+              width: pickList.width
+              leftAlign: true
+              iconText: root.mode === "client" ? (modelData.wired ? "󰈀" : "󰖩") : "󰖂"
+              text: root.mode === "client"
+                ? modelData.name + (modelData.ip ? "   " + modelData.ip : "")
+                : modelData.name
+              fontSize: Style.font.bodySmall
+              iconSize: Style.font.bodySmall
+              foreground: root.fg
+              fontFamily: root.fontFam
+              hasCursor: root.pickIndex === index
+              onHovered: function(h) { if (h) root.pickIndex = index }
+              onClicked: { root.pickIndex = index; root.activatePick() }
+            }
+          }
+        }
+
         // ---------- Busiest clients ----------
-        PanelSeparator { foreground: root.fg; visible: root.clients.length > 0 }
+        PanelSeparator { foreground: root.fg; visible: root.mode === "" && root.clients.length > 0 }
 
         Column {
           width: parent.width
           spacing: Style.spacing.labelGap
-          visible: root.clients.length > 0
+          visible: root.mode === "" && root.clients.length > 0
 
           PanelSectionHeader {
             text: "BUSIEST CLIENTS"

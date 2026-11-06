@@ -8,6 +8,9 @@ Talks to a UniFi gateway with an API key and prints JSON the QML side reads.
   omarchy-unifi routes              policy routes ("traffic routes") with their VPN
   omarchy-unifi panel               everything the panel shows, in one call
   omarchy-unifi vpn <route-id> on|off
+  omarchy-unifi vpns                list VPN clients a route can use
+  omarchy-unifi route-add <mac> <vpn-id> [name]   send one device through a VPN
+  omarchy-unifi route-del <route-id>              delete a route
 
 Config: ~/.config/omarchy-unifi/config.json
   {"host": "https://192.168.1.1", "site": "default",
@@ -16,9 +19,11 @@ Config: ~/.config/omarchy-unifi/config.json
 Key:    ~/.config/omarchy-unifi/key           (one line, chmod 600)
 """
 import json
+import re
 import os
 import ssl
 import sys
+import urllib.error
 import urllib.request
 
 CONF_DIR = os.path.expanduser(os.environ.get("OMARCHY_UNIFI_CONFIG", "~/.config/omarchy-unifi"))
@@ -50,8 +55,19 @@ def api(conf, path, method="GET", body=None):
         data=json.dumps(body).encode() if body is not None else None,
         headers={"X-API-KEY": conf["key"], "Accept": "application/json", "Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, context=CTX, timeout=8) as r:
-        data = json.load(r)
+    try:
+        with urllib.request.urlopen(req, context=CTX, timeout=8) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        # UniFi explains a rejected write in the body; surface that instead of "HTTP Error 400".
+        detail = e.read().decode(errors="replace")[:300]
+        try:
+            j = json.loads(detail)
+            detail = j.get("message") or j.get("meta", {}).get("msg") or detail
+        except ValueError:
+            pass
+        raise ValueError(f"{method} failed ({e.code}): {detail}") from None
+    data = json.loads(raw) if raw.strip() else {}
     return data["data"] if isinstance(data, dict) and "data" in data else data
 
 
@@ -64,9 +80,14 @@ def human_rate(bytes_per_s):
     return f"{bits:.1f} Tbit/s"
 
 
-def vpn_names(conf):
+def vpns(conf):
     nets = api(conf, f"/api/s/{conf['site']}/rest/networkconf")
-    return {n["_id"]: n["name"] for n in nets if n.get("purpose") == "vpn-client"}
+    return [{"id": n["_id"], "name": n["name"], "type": n.get("vpn_type", ""), "enabled": n.get("enabled", True)}
+            for n in nets if n.get("purpose") == "vpn-client"]
+
+
+def vpn_names(conf):
+    return {v["id"]: v["name"] for v in vpns(conf)}
 
 
 def routes(conf):
@@ -79,6 +100,8 @@ def routes(conf):
             "enabled": r.get("enabled", False),
             "vpn": names.get(r.get("network_id"), r.get("network_id")),
             "macs": [d["client_mac"] for d in r.get("target_devices", []) if d.get("type") == "CLIENT"],
+            "per_device": r.get("matching_target") == "INTERNET"
+                          and all(d.get("type") == "CLIENT" for d in r.get("target_devices", [])),
             "kill_switch": r.get("kill_switch_enabled", False),
         })
     return out
@@ -130,22 +153,58 @@ def bar(conf, route_list=None):
     }
 
 
-def panel(conf, top=12):
+def panel(conf):
     route_list = routes(conf)
     cl = clients(conf, route_list)
     for r in route_list:
         r["online"] = sum(1 for c in cl if c["route"] and c["route"]["id"] == r["id"])
-    return {"bar": bar(conf, route_list), "routes": route_list, "clients": cl[:top], "client_count": len(cl)}
+    vpn_list = [v for v in vpns(conf) if v["enabled"]]
+    return {"bar": bar(conf, route_list), "routes": route_list, "clients": cl, "client_count": len(cl), "vpns": vpn_list}
 
 
 def set_vpn(conf, route_id, on):
     path = f"/v2/api/site/{conf['site']}/trafficroutes"
     route = next((r for r in api(conf, path) if r["_id"] == route_id), None)
     if route is None:
-        raise SystemExit(f"no route {route_id}")
+        raise ValueError(f"no route {route_id}")
     route["enabled"] = on
     api(conf, f"{path}/{route_id}", method="PUT", body=route)
     return {"id": route_id, "enabled": on}
+
+
+def add_route(conf, mac, vpn_id, name=""):
+    mac = mac.lower()
+    if not re.fullmatch(r"([0-9a-f]{2}:){5}[0-9a-f]{2}", mac):
+        raise ValueError(f"not a MAC address: {mac}")
+    vpn = next((v for v in vpns(conf) if v["id"] == vpn_id), None)
+    if vpn is None:
+        raise ValueError(f"no VPN client {vpn_id}")
+    taken = next((r for r in routes(conf) if mac in r["macs"]), None)
+    if taken:
+        raise ValueError(f"{mac} is already on route {taken['name'] or taken['id']} ({taken['vpn']})")
+    if not name:
+        known = next((c for c in clients(conf) if c["mac"] == mac), None)
+        name = known["name"] if known else mac
+    body = {
+        "description": name,
+        "enabled": True,
+        "matching_target": "INTERNET",
+        "network_id": vpn_id,
+        "target_devices": [{"client_mac": mac, "type": "CLIENT"}],
+        "domains": [], "ip_addresses": [], "ip_ranges": [], "regions": [],
+        "kill_switch_enabled": False,
+    }
+    created = api(conf, f"/v2/api/site/{conf['site']}/trafficroutes", method="POST", body=body)
+    if isinstance(created, list):
+        created = created[0] if created else {}
+    return {"id": created.get("_id"), "name": name, "vpn": vpn["name"], "enabled": True}
+
+
+def delete_route(conf, route_id):
+    if not any(r["id"] == route_id for r in routes(conf)):
+        raise ValueError(f"no route {route_id}")
+    api(conf, f"/v2/api/site/{conf['site']}/trafficroutes/{route_id}", method="DELETE")
+    return {"id": route_id, "deleted": True}
 
 
 def main(argv):
@@ -165,6 +224,12 @@ def main(argv):
             out = panel(conf)
         elif cmd == "vpn" and len(argv) == 4 and argv[3] in ("on", "off"):
             out = set_vpn(conf, argv[2], argv[3] == "on")
+        elif cmd == "vpns":
+            out = vpns(conf)
+        elif cmd == "route-add" and len(argv) in (4, 5):
+            out = add_route(conf, argv[2], argv[3], argv[4] if len(argv) == 5 else "")
+        elif cmd == "route-del" and len(argv) == 3:
+            out = delete_route(conf, argv[2])
         else:
             print(__doc__.strip(), file=sys.stderr)
             return 2
