@@ -80,10 +80,38 @@ def human_rate(bytes_per_s):
     return f"{bits:.1f} Tbit/s"
 
 
-def vpns(conf):
+def tunnels(conf):
+    """Live state of each VPN client by network id. WireGuard has no real session,
+    so the gateway's CONNECTED only means the peer is configured; sending with
+    nothing coming back is the better sign of a dead tunnel."""
+    try:
+        conns = api(conf, f"/v2/api/site/{conf['site']}/vpn/connections").get("connections", [])
+    except (OSError, ValueError, AttributeError):
+        return {}
+    out = {}
+    for c in conns:
+        status = c.get("status", "UNKNOWN")
+        rx, tx = c.get("rx_rate_bps", 0) or 0, c.get("tx_rate_bps", 0) or 0
+        if status != "CONNECTED":
+            state = "down"
+        elif tx > 2000 and rx == 0:
+            state = "no-reply"
+        else:
+            state = "up"
+        out[c.get("network_id")] = {"status": status, "state": state, "rx": rx // 8, "tx": tx // 8,
+                                    "notes": c.get("notes", [])}
+    return out
+
+
+def vpns(conf, with_state=False):
     nets = api(conf, f"/api/s/{conf['site']}/rest/networkconf")
-    return [{"id": n["_id"], "name": n["name"], "type": n.get("vpn_type", ""), "enabled": n.get("enabled", True)}
-            for n in nets if n.get("purpose") == "vpn-client"]
+    out = [{"id": n["_id"], "name": n["name"], "type": n.get("vpn_type", ""), "enabled": n.get("enabled", True)}
+           for n in nets if n.get("purpose") == "vpn-client"]
+    if with_state:
+        live = tunnels(conf)
+        for v in out:
+            v["tunnel"] = live.get(v["id"], {"status": "UNKNOWN", "state": "unknown"})
+    return out
 
 
 def vpn_names(conf):
@@ -99,6 +127,7 @@ def routes(conf):
             "name": r.get("description", ""),
             "enabled": r.get("enabled", False),
             "vpn": names.get(r.get("network_id"), r.get("network_id")),
+            "vpn_id": r.get("network_id"),
             "macs": [d["client_mac"] for d in r.get("target_devices", []) if d.get("type") == "CLIENT"],
             "per_device": r.get("matching_target") == "INTERNET"
                           and all(d.get("type") == "CLIENT" for d in r.get("target_devices", [])),
@@ -158,7 +187,10 @@ def panel(conf):
     cl = clients(conf, route_list)
     for r in route_list:
         r["online"] = sum(1 for c in cl if c["route"] and c["route"]["id"] == r["id"])
-    vpn_list = [v for v in vpns(conf) if v["enabled"]]
+    vpn_list = [v for v in vpns(conf, with_state=True) if v["enabled"]]
+    state = {v["id"]: v["tunnel"]["state"] for v in vpn_list}
+    for r in route_list:
+        r["tunnel"] = state.get(r["vpn_id"], "unknown")
     return {"bar": bar(conf, route_list), "routes": route_list, "clients": cl, "client_count": len(cl), "vpns": vpn_list}
 
 
@@ -225,7 +257,7 @@ def main(argv):
         elif cmd == "vpn" and len(argv) == 4 and argv[3] in ("on", "off"):
             out = set_vpn(conf, argv[2], argv[3] == "on")
         elif cmd == "vpns":
-            out = vpns(conf)
+            out = vpns(conf, with_state=True)
         elif cmd == "route-add" and len(argv) in (4, 5):
             out = add_route(conf, argv[2], argv[3], argv[4] if len(argv) == 5 else "")
         elif cmd == "route-del" and len(argv) == 3:

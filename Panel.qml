@@ -146,6 +146,12 @@ Panel {
     else if (root.mode === "vpn") pickVpn(root.vpnList[root.pickIndex])
   }
 
+  function tunnelLabel(state) {
+    if (state === "down") return "tunnel down"
+    if (state === "no-reply") return "no reply from tunnel"
+    return ""
+  }
+
   function toggleRate() {
     root.settings = Object.assign({}, root.settings, { showRate: !root.showRate })
     if (root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName, root.settings)
@@ -434,9 +440,11 @@ Panel {
                 }
                 Text {
                   textFormat: Text.PlainText
-                  text: "via " + modelData.vpn + (modelData.online > 0 ? " · " + modelData.online + " online" : "")
-                  color: root.fg
-                  opacity: 0.55
+                  text: "via " + modelData.vpn
+                    + (root.tunnelLabel(modelData.tunnel) !== "" ? " · " + root.tunnelLabel(modelData.tunnel) : "")
+                    + (modelData.online > 0 ? " · " + modelData.online + " online" : "")
+                  color: root.tunnelLabel(modelData.tunnel) !== "" ? Color.accent : root.fg
+                  opacity: root.tunnelLabel(modelData.tunnel) !== "" ? 0.9 : 0.55
                   font.family: root.fontFam
                   font.pixelSize: Style.font.caption
                   elide: Text.ElideRight
@@ -537,7 +545,10 @@ Panel {
               iconText: root.mode === "client" ? (modelData.wired ? "󰈀" : "󰖩") : "󰖂"
               text: root.mode === "client"
                 ? modelData.name + (modelData.ip ? "   " + modelData.ip : "")
-                : modelData.name
+                : modelData.name + "   " + (modelData.tunnel && modelData.tunnel.state !== "up"
+                    ? "· " + root.tunnelLabel(modelData.tunnel.state)
+                    : "· up" + (modelData.tunnel && modelData.tunnel.rx > 0 ? "  ↓ " + root.shortRate(modelData.tunnel.rx) : ""))
+              opacity: root.mode === "vpn" && modelData.tunnel && modelData.tunnel.state === "down" ? 0.5 : 1
               fontSize: Style.font.bodySmall
               iconSize: Style.font.bodySmall
               foreground: root.fg
