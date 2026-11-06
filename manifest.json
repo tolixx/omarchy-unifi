@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "tolixx.unifi",
+  "name": "UniFi",
+  "version": "0.1.0",
+  "author": "tolixx",
+  "license": "MIT",
+  "description": "UniFi gateway in the Omarchy bar: WAN rates, busiest clients, and a switch per VPN policy route.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "UniFi",
+    "description": "WAN rates, busiest clients, and VPN policy route switches from a UniFi gateway.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 10,
+      "showRate": false
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Bar refresh interval (seconds)",
+        "min": 5,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 10
+      },
+      {
+        "key": "showRate",
+        "type": "boolean",
+        "label": "Show download rate in the bar",
+        "defaultValue": false
+      }
+    ]
+  }
+}

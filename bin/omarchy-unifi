@@ -6,9 +6,13 @@ Talks to a UniFi gateway with an API key and prints JSON the QML side reads.
   omarchy-unifi bar                 WAN rates + client count, Waybar-style JSON
   omarchy-unifi clients             active clients with rates and their VPN route
   omarchy-unifi routes              policy routes ("traffic routes") with their VPN
+  omarchy-unifi panel               everything the panel shows, in one call
   omarchy-unifi vpn <route-id> on|off
 
-Config: ~/.config/omarchy-unifi/config.json  {"host": "https://192.168.1.1", "site": "default"}
+Config: ~/.config/omarchy-unifi/config.json
+  {"host": "https://192.168.1.1", "site": "default",
+   "aliases": {"aa:bb:cc:dd:ee:ff": "Desk PC"},   optional names by MAC
+   "hide_names": false}                           true: clients without an alias show as "Device N"
 Key:    ~/.config/omarchy-unifi/key           (one line, chmod 600)
 """
 import json
@@ -80,9 +84,9 @@ def routes(conf):
     return out
 
 
-def clients(conf):
+def clients(conf, route_list=None):
     by_mac = {}
-    for r in routes(conf):
+    for r in route_list if route_list is not None else routes(conf):
         for m in r["macs"]:
             by_mac.setdefault(m, r)
     out = []
@@ -98,22 +102,40 @@ def clients(conf):
             "route": {"id": r["id"], "vpn": r["vpn"], "enabled": r["enabled"]} if r else None,
         })
     out.sort(key=lambda c: -(c["rx"] + c["tx"]))
+    aliases = {k.lower(): v for k, v in conf.get("aliases", {}).items()}
+    n = 0
+    for c in out:
+        alias = aliases.get((c["mac"] or "").lower())
+        if alias:
+            c["name"] = alias
+        elif conf.get("hide_names"):
+            n += 1
+            c["name"] = f"Device {n}"
     return out
 
 
-def bar(conf):
+def bar(conf, route_list=None):
     health = {s["subsystem"]: s for s in api(conf, f"/api/s/{conf['site']}/stat/health")}
     wan = health.get("wan", {})
     users = sum(health.get(k, {}).get("num_user", 0) for k in ("lan", "wlan"))
     # The gateway reports WAN rates from its own side: rx is download, tx is upload.
     down, up = wan.get("rx_bytes-r", 0), wan.get("tx_bytes-r", 0)
-    vpn_on = sum(1 for r in routes(conf) if r["enabled"])
+    vpn_on = sum(1 for r in (route_list if route_list is not None else routes(conf)) if r["enabled"])
     return {
         "text": f"↓ {human_rate(down)} ↑ {human_rate(up)}",
         "tooltip": f"{wan.get('isp_name', 'WAN')} {wan.get('status', '?')}\n{users} clients, {vpn_on} on VPN",
         "class": "ok" if wan.get("status") == "ok" else "down",
         "down": down, "up": up, "clients": users, "vpn_routes_on": vpn_on,
+        "isp": wan.get("isp_name", ""), "status": wan.get("status", "?"),
     }
+
+
+def panel(conf, top=12):
+    route_list = routes(conf)
+    cl = clients(conf, route_list)
+    for r in route_list:
+        r["online"] = sum(1 for c in cl if c["route"] and c["route"]["id"] == r["id"])
+    return {"bar": bar(conf, route_list), "routes": route_list, "clients": cl[:top], "client_count": len(cl)}
 
 
 def set_vpn(conf, route_id, on):
@@ -130,22 +152,25 @@ def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
         print(__doc__.strip())
         return 0
-    conf = load_config()
     cmd = argv[1]
     try:
+        conf = load_config()
         if cmd == "bar":
             out = bar(conf)
         elif cmd == "clients":
             out = clients(conf)
         elif cmd == "routes":
             out = routes(conf)
+        elif cmd == "panel":
+            out = panel(conf)
         elif cmd == "vpn" and len(argv) == 4 and argv[3] in ("on", "off"):
             out = set_vpn(conf, argv[2], argv[3] == "on")
         else:
             print(__doc__.strip(), file=sys.stderr)
             return 2
-    except OSError as e:
-        out = {"text": "UniFi ?", "tooltip": str(e), "class": "error"} if cmd == "bar" else {"error": str(e)}
+    except (OSError, ValueError, KeyError) as e:
+        msg = f"no key file ({e.filename})" if isinstance(e, FileNotFoundError) else str(e)
+        out = {"text": "UniFi ?", "tooltip": msg, "class": "error"} if cmd == "bar" else {"error": msg}
     print(json.dumps(out, ensure_ascii=False))
     return 0
 
