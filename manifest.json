@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "tolixx.unifi",
   "name": "UniFi",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": "tolixx",
   "license": "MIT",
   "description": "Switch, add and remove UniFi VPN policy routes per device from the Omarchy bar, plus WAN rates and the busiest clients.",

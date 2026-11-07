@@ -11,20 +11,26 @@ Talks to a UniFi gateway with an API key and prints JSON the QML side reads.
   omarchy-unifi vpns                list VPN clients a route can use
   omarchy-unifi route-add <mac> <vpn-id> [name]   send one device through a VPN
   omarchy-unifi route-del <route-id>              delete a route
+  omarchy-unifi pin                 trust the gateway's current certificate (run once)
 
 Config: ~/.config/omarchy-unifi/config.json
   {"host": "https://192.168.1.1", "site": "default",
    "aliases": {"aa:bb:cc:dd:ee:ff": "Desk PC"},   optional names by MAC
    "hide_names": false}                           true: clients without an alias show as "Device N"
 Key:    ~/.config/omarchy-unifi/key           (one line, chmod 600)
+Pin:    ~/.config/omarchy-unifi/cert.sha256   (written by `pin`)
+
+The key is only sent to a gateway whose certificate matches the pin, or that
+passes normal TLS verification against "ca_file" when that is set in config.json.
 """
+import hashlib
+import http.client
 import json
 import re
 import os
 import ssl
 import sys
-import urllib.error
-import urllib.request
+import urllib.parse
 
 CONF_DIR = os.path.expanduser(os.environ.get("OMARCHY_UNIFI_CONFIG", "~/.config/omarchy-unifi"))
 
@@ -42,31 +48,90 @@ def load_config():
     return conf
 
 
-# The gateway serves a self-signed certificate on the LAN.
-CTX = ssl.create_default_context()
-CTX.check_hostname = False
-CTX.verify_mode = ssl.CERT_NONE
+PIN_FILE = os.path.join(CONF_DIR, "cert.sha256")
+
+
+def read_pin():
+    try:
+        with open(PIN_FILE) as f:
+            return f.read().strip().lower().replace(":", "") or None
+    except FileNotFoundError:
+        return None
+
+
+def connect(conf, pinning=True):
+    """Open a TLS connection to the gateway and authenticate it before anything is sent.
+
+    UniFi gateways serve a self-signed certificate, so by default the certificate is
+    pinned by its SHA-256 fingerprint (see `pin`). With "ca_file" in config.json the
+    connection is verified the normal way instead, hostname included.
+    """
+    u = urllib.parse.urlsplit(conf["host"])
+    if u.scheme != "https" or not u.hostname:
+        raise ValueError(f"host must look like https://192.168.1.1, got {conf['host']!r}")
+    ca_file = conf.get("ca_file")
+    if ca_file:
+        ctx = ssl.create_default_context(cafile=os.path.expanduser(ca_file))
+    else:
+        # No CA to check against: the fingerprint check below authenticates the gateway.
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    c = http.client.HTTPSConnection(u.hostname, u.port or 443, context=ctx, timeout=8)
+    c.connect()
+    if ca_file or not pinning:
+        return c
+    fp = hashlib.sha256(c.sock.getpeercert(binary_form=True)).hexdigest()
+    pin = read_pin()
+    if pin is None:
+        c.close()
+        raise ValueError("gateway certificate not pinned yet, run: omarchy-unifi pin")
+    if fp != pin:
+        c.close()
+        raise ValueError("gateway certificate does not match the pin, key not sent. "
+                         "If you changed the certificate yourself, run: omarchy-unifi pin")
+    return c
+
+
+def pin(conf):
+    """Trust on first use: save the fingerprint of the certificate the gateway serves now."""
+    c = connect(conf, pinning=False)
+    try:
+        cert = c.sock.getpeercert(binary_form=True)
+    finally:
+        c.close()
+    fp = hashlib.sha256(cert).hexdigest()
+    old = read_pin()
+    os.makedirs(CONF_DIR, exist_ok=True)
+    fd = os.open(PIN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(fp + "\n")
+    return {"host": conf["host"], "sha256": ":".join(fp[i:i + 2] for i in range(0, len(fp), 2)),
+            "changed": old is not None and old != fp, "file": PIN_FILE}
 
 
 def api(conf, path, method="GET", body=None):
-    req = urllib.request.Request(
-        conf["host"].rstrip("/") + "/proxy/network" + path,
-        method=method,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={"X-API-KEY": conf["key"], "Accept": "application/json", "Content-Type": "application/json"},
-    )
+    c = connect(conf)
     try:
-        with urllib.request.urlopen(req, context=CTX, timeout=8) as r:
-            raw = r.read()
-    except urllib.error.HTTPError as e:
+        c.request(
+            method,
+            "/proxy/network" + path,
+            body=json.dumps(body).encode() if body is not None else None,
+            headers={"X-API-KEY": conf["key"], "Accept": "application/json", "Content-Type": "application/json"},
+        )
+        r = c.getresponse()
+        status, raw = r.status, r.read()
+    finally:
+        c.close()
+    if status >= 400:
         # UniFi explains a rejected write in the body; surface that instead of "HTTP Error 400".
-        detail = e.read().decode(errors="replace")[:300]
+        detail = raw.decode(errors="replace")[:300]
         try:
             j = json.loads(detail)
             detail = j.get("message") or j.get("meta", {}).get("msg") or detail
         except ValueError:
             pass
-        raise ValueError(f"{method} failed ({e.code}): {detail}") from None
+        raise ValueError(f"{method} failed ({status}): {detail}")
     data = json.loads(raw) if raw.strip() else {}
     return data["data"] if isinstance(data, dict) and "data" in data else data
 
@@ -262,6 +327,8 @@ def main(argv):
             out = add_route(conf, argv[2], argv[3], argv[4] if len(argv) == 5 else "")
         elif cmd == "route-del" and len(argv) == 3:
             out = delete_route(conf, argv[2])
+        elif cmd == "pin":
+            out = pin(conf)
         else:
             print(__doc__.strip(), file=sys.stderr)
             return 2

@@ -45,7 +45,11 @@ Then give it a key:
    {"host": "https://192.168.1.1", "site": "default"}
    ```
 
-The gateway uses a self-signed certificate on the LAN, so the helper does not verify TLS. Use the LAN address, not a remote one.
+4. Pin the gateway's certificate:
+   ```
+   ~/.config/omarchy/plugins/tolixx.unifi/bin/omarchy-unifi pin
+   ```
+   UniFi gateways serve a self-signed certificate, so the helper saves its SHA-256 fingerprint to `~/.config/omarchy-unifi/cert.sha256` and sends the key only to a gateway with that certificate. If it ever changes, the widget shows "does not match the pin" and sends nothing. Run `pin` again only if you know why it changed (new certificate, gateway reset). If your gateway has a certificate from a CA you trust, set `"ca_file": "/path/to/ca.pem"` in `config.json` and it is verified the normal way, hostname included.
 
 The key has the rights of the UniFi user that created it. Switching, adding and removing routes writes to the gateway, the same as doing it in the UniFi app.
 
