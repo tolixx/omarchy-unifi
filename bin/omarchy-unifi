@@ -69,6 +69,9 @@ def connect(conf, pinning=True):
     u = urllib.parse.urlsplit(conf["host"])
     if u.scheme != "https" or not u.hostname:
         raise ValueError(f"host must look like https://192.168.1.1, got {conf['host']!r}")
+    if u.path not in ("", "/"):
+        # UniFi OS serves the API at /proxy/network on the gateway itself; a path would be dropped.
+        raise ValueError(f"host takes no path, use https://{u.netloc}")
     ca_file = conf.get("ca_file")
     if ca_file:
         ctx = ssl.create_default_context(cafile=os.path.expanduser(ca_file))
@@ -104,6 +107,7 @@ def pin(conf):
     old = read_pin()
     os.makedirs(CONF_DIR, exist_ok=True)
     fd = os.open(PIN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)  # the mode above only applies when the file is created
     with os.fdopen(fd, "w") as f:
         f.write(fp + "\n")
     return {"host": conf["host"], "sha256": ":".join(fp[i:i + 2] for i in range(0, len(fp), 2)),
@@ -332,8 +336,13 @@ def main(argv):
         else:
             print(__doc__.strip(), file=sys.stderr)
             return 2
-    except (OSError, ValueError, KeyError) as e:
-        msg = f"no key file ({e.filename})" if isinstance(e, FileNotFoundError) else str(e)
+    except (OSError, ValueError, KeyError, http.client.HTTPException) as e:
+        if isinstance(e, FileNotFoundError):
+            msg = f"no key file ({e.filename})"
+        elif isinstance(e, http.client.HTTPException):
+            msg = f"odd reply from the gateway ({type(e).__name__}: {str(e).strip()})"
+        else:
+            msg = str(e)
         out = {"text": "UniFi ?", "tooltip": msg, "class": "error"} if cmd == "bar" else {"error": msg}
     print(json.dumps(out, ensure_ascii=False))
     return 0

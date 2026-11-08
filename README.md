@@ -40,7 +40,7 @@ Then give it a key:
    nano ~/.config/omarchy-unifi/key        # paste the key, one line
    chmod 600 ~/.config/omarchy-unifi/key
    ```
-3. Point it at your gateway in `~/.config/omarchy-unifi/config.json`:
+3. Point it at your gateway in `~/.config/omarchy-unifi/config.json` (host and optional port, no path):
    ```json
    {"host": "https://192.168.1.1", "site": "default"}
    ```
