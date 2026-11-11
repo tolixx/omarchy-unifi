@@ -36,9 +36,9 @@ Then give it a key:
 1. UniFi: Settings > Control Plane > Integrations > Create API Key
 2. Save the key:
    ```
-   mkdir -p ~/.config/omarchy-unifi
+   mkdir -p -m 700 ~/.config/omarchy-unifi
+   install -m 600 /dev/null ~/.config/omarchy-unifi/key   # private before the key goes in
    nano ~/.config/omarchy-unifi/key        # paste the key, one line
-   chmod 600 ~/.config/omarchy-unifi/key
    ```
 3. Point it at your gateway in `~/.config/omarchy-unifi/config.json` (host and optional port, no path):
    ```json
