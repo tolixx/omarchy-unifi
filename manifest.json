@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "tolixx.unifi",
   "name": "UniFi",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "author": "tolixx",
   "license": "MIT",
-  "description": "Switch, add and remove UniFi VPN policy routes per device from the Omarchy bar, plus WAN rates and the busiest clients.",
+  "description": "Switch, add and remove UniFi VPN policy routes per device from the Omarchy bar, upload a WireGuard .conf as a new VPN client, plus WAN rates and the busiest clients.",
   "kinds": [
     "bar-widget"
   ],

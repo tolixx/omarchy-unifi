@@ -13,6 +13,7 @@ import qs.Ui
 //   panel  -> {bar, routes[], clients[], client_count}        (panel open)
 //   vpn <route-id> on|off                                     (switches)
 //   route-add <mac> <vpn-id> <name>, route-del <route-id>      (add / remove a device)
+//   vpn-files, vpn-add <file.conf>                             (upload a WireGuard config)
 Panel {
   id: root
   moduleName: "tolixx.unifi"
@@ -33,17 +34,20 @@ Panel {
   property bool cursorActive: false
 
   // Adding a device: "" (route list) -> "client" (pick a device) -> "vpn" (pick a VPN client).
+  // Adding a tunnel: "" -> "conf" (pick a WireGuard .conf from ~/Downloads).
   property string mode: ""
   property int pickIndex: 0
   property string pickMac: ""
   property string pickName: ""
   property var vpnList: []
+  property var confFiles: []
   property string armedDelete: ""   // a route id waiting for the second click
   property string notice: ""
   // Snapshot taken when picking starts: a live binding would rebuild the list
   // (and jump back to the top) on every refresh.
   property var unrouted: []
-  readonly property int pickCount: mode === "client" ? unrouted.length : (mode === "vpn" ? vpnList.length : 0)
+  readonly property int pickCount: mode === "client" ? unrouted.length
+    : (mode === "vpn" ? vpnList.length : (mode === "conf" ? confFiles.length : 0))
 
   readonly property string glyph: "󰑩"
   // A widget instance can exist without a bar (e.g. while the shell reloads), so fall back to theme values.
@@ -125,6 +129,18 @@ Panel {
     runAction(["route-add", root.pickMac, v.id, root.pickName], "Sending " + root.pickName + " through " + v.name + "…")
   }
 
+  function startAddTunnel() {
+    if (filesProc.running) return
+    root.armedDelete = ""
+    filesProc.running = true
+  }
+
+  function pickConf(f) {
+    if (!f) return
+    root.mode = ""
+    runAction(["vpn-add", f.path], "Uploading " + f.file + " to the gateway…")
+  }
+
   function cancelPick() {
     root.mode = ""
     root.cursorActive = false
@@ -144,6 +160,7 @@ Panel {
   function activatePick() {
     if (root.mode === "client") pickClient(root.unrouted[root.pickIndex])
     else if (root.mode === "vpn") pickVpn(root.vpnList[root.pickIndex])
+    else if (root.mode === "conf") pickConf(root.confFiles[root.pickIndex])
   }
 
   function tunnelLabel(state) {
@@ -166,6 +183,7 @@ Panel {
     function hide() { root.close() }
     function toggle() { root.toggle() }
     function toggleRate() { root.toggleRate() }
+    function addTunnel() { root.open(); root.startAddTunnel() }
   }
 
   onOpenedChanged: {
@@ -236,11 +254,30 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         var d = root.parse(text)
-        root.notice = d.error ? d.error : (d.deleted ? "Route removed" : (d.vpn ? d.name + " now goes through " + d.vpn : ""))
+        root.notice = d.error ? d.error
+          : d.deleted ? "Route removed"
+          : d.added ? "Tunnel " + d.name + " added (" + d.subnet + ")"
+          : d.vpn ? d.name + " now goes through " + d.vpn : ""
         noticeTimer.restart()
       }
     }
     onExited: root.refreshPanel()
+  }
+
+  Process {
+    id: filesProc
+    command: [root.helper, "vpn-files"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var d = root.parse(text)
+        if (d.error) { root.notice = d.error; noticeTimer.restart(); return }
+        root.confFiles = Array.isArray(d) ? d : []
+        root.mode = "conf"
+        root.pickIndex = 0
+        root.cursorActive = true
+      }
+    }
   }
 
   Timer { id: noticeTimer; interval: 6000; onTriggered: root.notice = "" }
@@ -291,7 +328,11 @@ Panel {
         else if (root.cursorActive) root.toggleSelectedRoute()
       }
       onDeleteRequested: if (root.mode === "" && root.cursorActive) root.deleteRoute(root.routes[root.routeIndex])
-      onTextKey: function(t) { if (root.mode === "" && (t === "a" || t === "+")) root.startAdd() }
+      onTextKey: function(t) {
+        if (root.mode !== "") return
+        if (t === "a" || t === "+") root.startAdd()
+        else if (t === "t") root.startAddTunnel()
+      }
       onCloseRequested: root.mode !== "" ? root.cancelPick() : root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
@@ -398,6 +439,22 @@ Panel {
             }
 
             Button {
+              id: tunnelButton
+              anchors.right: addButton.left
+              anchors.rightMargin: Style.space(6)
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: "󰖂"
+              text: "Add tunnel"
+              fontSize: Style.font.caption
+              iconSize: Style.font.bodySmall
+              foreground: root.fg
+              fontFamily: root.fontFam
+              bordered: true
+              tooltipText: "Upload a WireGuard .conf to the gateway (t)"
+              onClicked: root.startAddTunnel()
+            }
+
+            Button {
               id: addButton
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
@@ -500,7 +557,9 @@ Panel {
               anchors.left: parent.left
               anchors.right: backButton.left
               anchors.verticalCenter: parent.verticalCenter
-              text: root.mode === "client" ? "WHICH DEVICE?" : ("SEND " + root.pickName + " THROUGH").toUpperCase()
+              text: root.mode === "client" ? "WHICH DEVICE?"
+                : root.mode === "conf" ? "WHICH WIREGUARD CONFIG?"
+                : ("SEND " + root.pickName + " THROUGH").toUpperCase()
               foreground: root.fg
               fontFamily: root.fontFam
             }
@@ -527,6 +586,17 @@ Panel {
             font.pixelSize: Style.font.bodySmall
           }
 
+          Text {
+            visible: root.mode === "conf" && root.confFiles.length === 0
+            width: parent.width
+            text: "No WireGuard .conf in ~/Downloads. Save one there, or set conf_dirs in config.json."
+            wrapMode: Text.Wrap
+            color: root.fg
+            opacity: 0.6
+            font.family: root.fontFam
+            font.pixelSize: Style.font.bodySmall
+          }
+
           ListView {
             id: pickList
             width: parent.width
@@ -536,15 +606,19 @@ Panel {
             spacing: Style.space(2)
             currentIndex: root.pickIndex
             onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
-            model: root.mode === "client" ? root.unrouted : (root.mode === "vpn" ? root.vpnList : [])
+            model: root.mode === "client" ? root.unrouted
+              : root.mode === "vpn" ? root.vpnList
+              : root.mode === "conf" ? root.confFiles : []
             delegate: Button {
               required property var modelData
               required property int index
               width: pickList.width
               leftAlign: true
-              iconText: root.mode === "client" ? (modelData.wired ? "󰈀" : "󰖩") : "󰖂"
+              iconText: root.mode === "client" ? (modelData.wired ? "󰈀" : "󰖩") : (root.mode === "conf" ? "󰈙" : "󰖂")
               text: root.mode === "client"
                 ? modelData.name + (modelData.ip ? "   " + modelData.ip : "")
+                : root.mode === "conf"
+                ? modelData.name + "   " + modelData.address
                 : modelData.name + "   " + (modelData.tunnel && modelData.tunnel.state !== "up"
                     ? "· " + root.tunnelLabel(modelData.tunnel.state)
                     : "· up" + (modelData.tunnel && modelData.tunnel.rx > 0 ? "  ↓ " + root.shortRate(modelData.tunnel.rx) : ""))

@@ -16,9 +16,10 @@ For full network monitoring (devices, WAN links, client search) look at the othe
 - One switch per policy route, with the VPN it uses and how many of its devices are online
 - Add device: pick any online device without a route, then one of your VPN clients, and the gateway creates the route
 - Remove a per-device route with the × next to it (click twice)
+- Add tunnel: pick a WireGuard `.conf` from `~/Downloads` and it becomes a new VPN client on the gateway, same as the file upload in the UniFi app. Then send a device through it with Add device
 - Tunnel state from the gateway: routes and the VPN picker mark tunnels that are down, or that send without getting anything back
 - Top 8 clients by traffic, wired or Wi-Fi, and which ones go through a VPN
-- Keys: `j` / `k` move, `enter` flips the selected route, `x` removes it, `a` adds a device, `esc` goes back or closes
+- Keys: `j` / `k` move, `enter` flips the selected route, `x` removes it, `a` adds a device, `t` adds a tunnel, `esc` goes back or closes
 
 ## Requirements
 
@@ -51,7 +52,7 @@ Then give it a key:
    ```
    UniFi gateways serve a self-signed certificate, so the helper saves its SHA-256 fingerprint to `~/.config/omarchy-unifi/cert.sha256` and sends the key only to a gateway with that certificate. If it ever changes, the widget shows "does not match the pin" and sends nothing. Run `pin` again only if you know why it changed (new certificate, gateway reset). If your gateway has a certificate from a CA you trust, set `"ca_file": "/path/to/ca.pem"` in `config.json` and it is verified the normal way, hostname included.
 
-The key has the rights of the UniFi user that created it. Switching, adding and removing routes writes to the gateway, the same as doing it in the UniFi app.
+The key has the rights of the UniFi user that created it. Switching, adding and removing routes writes to the gateway, the same as doing it in the UniFi app. Add tunnel sends the whole `.conf`, private key included, to the gateway (only there, over the pinned connection); the plugin keeps no copy.
 
 ### Remove
 
@@ -69,12 +70,14 @@ The plugin writes nothing else to your system. Routes stay as you last switched 
   "host": "https://192.168.1.1",
   "site": "default",
   "aliases": {"aa:bb:cc:dd:ee:ff": "Desk PC"},
-  "hide_names": true
+  "hide_names": true,
+  "conf_dirs": ["~/Downloads", "~/.config/omarchy-unifi/wireguard"]
 }
 ```
 
 - `aliases`: your own names for clients, by MAC
 - `hide_names`: clients without an alias show as "Device 1", "Device 2"... Handy before a screenshot
+- `conf_dirs`: where Add tunnel looks for WireGuard `.conf` files (these two by default)
 
 In the bar widget settings: refresh interval (default 10 s) and whether to show the download rate.
 
@@ -91,7 +94,11 @@ omarchy-unifi vpn <route-id> on|off  # switch a route
 omarchy-unifi vpns                   # VPN clients a route can use
 omarchy-unifi route-add <mac> <vpn-id> [name]  # send one device through a VPN
 omarchy-unifi route-del <route-id>   # delete a route
+omarchy-unifi vpn-files              # WireGuard .conf files found in conf_dirs
+omarchy-unifi vpn-add <file.conf> [name]  # upload a WireGuard config as a new VPN client
 ```
+
+`vpn-add` checks the file first ([Interface] with PrivateKey and Address, [Peer] with PublicKey and Endpoint), refuses a name that is taken, and says which network the tunnel address overlaps if it does. The gateway reads the address and MTU from the file. The name defaults to the file name without `.conf`.
 
 A new route matches all of the device's internet traffic (UniFi's "Internet" target) with no kill switch. If the tunnel behind it is down, that device loses internet until you switch the route off or remove it.
 

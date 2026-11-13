@@ -11,12 +11,15 @@ Talks to a UniFi gateway with an API key and prints JSON the QML side reads.
   omarchy-unifi vpns                list VPN clients a route can use
   omarchy-unifi route-add <mac> <vpn-id> [name]   send one device through a VPN
   omarchy-unifi route-del <route-id>              delete a route
+  omarchy-unifi vpn-add <file.conf> [name]        upload a WireGuard config as a new VPN client
+  omarchy-unifi vpn-files                         WireGuard configs found in conf_dirs
   omarchy-unifi pin                 trust the gateway's current certificate (run once)
 
 Config: ~/.config/omarchy-unifi/config.json
   {"host": "https://192.168.1.1", "site": "default",
    "aliases": {"aa:bb:cc:dd:ee:ff": "Desk PC"},   optional names by MAC
-   "hide_names": false}                           true: clients without an alias show as "Device N"
+   "hide_names": false,                           true: clients without an alias show as "Device N"
+   "conf_dirs": ["~/Downloads", "~/.config/omarchy-unifi/wireguard"]}   where vpn-files looks
 Key:    ~/.config/omarchy-unifi/key           (one line, chmod 600)
 Pin:    ~/.config/omarchy-unifi/cert.sha256   (written by `pin`)
 
@@ -25,6 +28,7 @@ passes normal TLS verification against "ca_file" when that is set in config.json
 """
 import hashlib
 import http.client
+import ipaddress
 import json
 import re
 import os
@@ -308,6 +312,111 @@ def delete_route(conf, route_id):
     return {"id": route_id, "deleted": True}
 
 
+def parse_wg_conf(text):
+    """Check a wg-quick config enough to catch a wrong file before the gateway sees it.
+    Returns the Interface addresses; key values are never returned or printed."""
+    section, seen, addrs = None, {}, []
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        m = re.fullmatch(r"\[(\w+)\]", line)
+        if m:
+            section = m.group(1).lower()
+            seen.setdefault(section, set())
+            continue
+        if "=" not in line or section is None:
+            raise ValueError("not a WireGuard config: expected [Interface] and [Peer] sections")
+        k, v = (s.strip() for s in line.split("=", 1))
+        seen[section].add(k.lower())
+        if section == "interface" and k.lower() == "address":
+            addrs += [a.strip() for a in v.split(",") if a.strip()]
+    need = {"interface": ("privatekey", "address"), "peer": ("publickey", "endpoint")}
+    missing = [f"[{s.capitalize()}] {k}" for s, keys in need.items() for k in keys if k not in seen.get(s, ())]
+    if missing:
+        raise ValueError("WireGuard config is missing " + ", ".join(missing))
+    return addrs
+
+
+def read_wg_conf(path):
+    path = os.path.expanduser(path)
+    if not os.path.isfile(path):
+        raise ValueError(f"no such file: {path}")
+    if os.path.getsize(path) > 16384:
+        raise ValueError(f"{os.path.basename(path)} is too big for a WireGuard config")
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    return text, parse_wg_conf(text)
+
+
+def conf_dirs(conf):
+    return [os.path.expanduser(d) for d in conf.get("conf_dirs", ["~/Downloads", os.path.join(CONF_DIR, "wireguard")])]
+
+
+def vpn_files(conf):
+    """WireGuard configs the panel can offer for upload: *.conf in conf_dirs that parse."""
+    out = []
+    for d in conf_dirs(conf):
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for n in names:
+            p = os.path.join(d, n)
+            if not n.endswith(".conf") or not os.path.isfile(p):
+                continue
+            try:
+                _, addrs = read_wg_conf(p)
+            except (OSError, ValueError, UnicodeDecodeError):
+                continue
+            out.append({"path": p, "file": n, "name": os.path.splitext(n)[0], "address": ", ".join(addrs)})
+    return out
+
+
+def add_vpn(conf, path, name=""):
+    """Upload a wg-quick .conf as a new WireGuard VPN client, like the file upload in the UniFi UI.
+    The gateway reads Address and MTU from the file itself."""
+    text, addrs = read_wg_conf(path)
+    name = (name or os.path.splitext(os.path.basename(path))[0]).strip()
+    if not name:
+        raise ValueError("empty name")
+    nets = api(conf, f"/api/s/{conf['site']}/rest/networkconf")
+    if any(n.get("name", "").lower() == name.lower() for n in nets):
+        raise ValueError(f"a network called {name} already exists, pick another name")
+    # The gateway refuses an overlapping subnet with a bare "SubnetOverlapped"; say which one.
+    for a in addrs:
+        try:
+            mine = ipaddress.ip_interface(a).network
+        except ValueError:
+            raise ValueError(f"bad Address in the config: {a}")
+        for n in nets:
+            try:
+                other = ipaddress.ip_interface(n.get("ip_subnet", "")).network
+            except ValueError:
+                continue
+            if mine.version == other.version and mine.overlaps(other):
+                raise ValueError(f"{a} overlaps {n['name']} ({other}), the gateway won't take it")
+    body = {
+        "name": name,
+        "purpose": "vpn-client",
+        "vpn_type": "wireguard-client",
+        "enabled": True,
+        "wireguard_client_mode": "file",
+        "wireguard_client_configuration_file": text,
+        "wireguard_client_configuration_filename": os.path.basename(path),
+    }
+    try:
+        created = api(conf, f"/api/s/{conf['site']}/rest/networkconf", method="POST", body=body)
+    except ValueError as e:
+        if "SubnetOverlapped" in str(e):
+            raise ValueError("the tunnel address overlaps a network on the gateway") from None
+        raise
+    if isinstance(created, list):
+        created = created[0] if created else {}
+    return {"id": created.get("_id"), "name": name, "added": True,
+            "subnet": created.get("ip_subnet") or ", ".join(addrs)}
+
+
 def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
         print(__doc__.strip())
@@ -331,12 +440,16 @@ def main(argv):
             out = add_route(conf, argv[2], argv[3], argv[4] if len(argv) == 5 else "")
         elif cmd == "route-del" and len(argv) == 3:
             out = delete_route(conf, argv[2])
+        elif cmd == "vpn-add" and len(argv) in (3, 4):
+            out = add_vpn(conf, argv[2], argv[3] if len(argv) == 4 else "")
+        elif cmd == "vpn-files":
+            out = vpn_files(conf)
         elif cmd == "pin":
             out = pin(conf)
         else:
             print(__doc__.strip(), file=sys.stderr)
             return 2
-    except (OSError, ValueError, KeyError, http.client.HTTPException) as e:
+    except (OSError, ValueError, KeyError, UnicodeDecodeError, http.client.HTTPException) as e:
         if isinstance(e, FileNotFoundError):
             msg = f"no key file ({e.filename})"
         elif isinstance(e, http.client.HTTPException):
